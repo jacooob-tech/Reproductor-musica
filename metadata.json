@@ -1,0 +1,6 @@
+{
+  "name": "Reproductor de Música",
+  "description": "Reproductor de música nativo con el estilo elegante de las aplicaciones de Google (Material Design 3).",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
