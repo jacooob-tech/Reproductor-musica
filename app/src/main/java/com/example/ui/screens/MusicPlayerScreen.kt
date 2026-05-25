@@ -53,11 +53,16 @@ import com.example.data.Playlist
 import com.example.data.Track
 import com.example.viewmodel.ActiveTab
 import com.example.viewmodel.MusicViewModel
+import com.example.viewmodel.AiRetrievalState
 import java.util.Locale
 import kotlin.math.sin
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.BorderStroke
 import kotlinx.coroutines.delay
+import coil.compose.AsyncImage
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
 
 @OptIn(ExperimentalAnimationApi::class, ExperimentalMaterial3Api::class)
 @Composable
@@ -94,6 +99,10 @@ fun MusicPlayerApp(
 
     var showAddPlaylistDialogTrack by remember { mutableStateOf<Track?>(null) }
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
+    var trackBeingManaged by remember { mutableStateOf<Track?>(null) }
+    var showEqualizerDialogTrack by remember { mutableStateOf<Track?>(null) }
+    var showBluetoothDialog by remember { mutableStateOf(false) }
+    val connectedDeviceName by viewModel.bluetoothConnectedDeviceName.collectAsStateWithLifecycle()
 
     Scaffold(
         bottomBar = {
@@ -168,12 +177,14 @@ fun MusicPlayerApp(
                     ActiveTab.HOME -> HomeScreen(
                         viewModel = viewModel,
                         paddingValues = innerPadding,
-                        onAddToPlaylist = { showAddPlaylistDialogTrack = it }
+                        onAddToPlaylist = { showAddPlaylistDialogTrack = it },
+                        onManageTrack = { trackBeingManaged = it }
                     )
                     ActiveTab.SEARCH -> SearchScreen(
                         viewModel = viewModel,
                         paddingValues = innerPadding,
-                        onAddToPlaylist = { showAddPlaylistDialogTrack = it }
+                        onAddToPlaylist = { showAddPlaylistDialogTrack = it },
+                        onManageTrack = { trackBeingManaged = it }
                     )
                     ActiveTab.LIBRARY -> LibraryScreen(
                         viewModel = viewModel,
@@ -226,6 +237,7 @@ fun MusicPlayerApp(
                         queue = viewModel.queue.collectAsStateWithLifecycle().value,
                         isSearchingLyrics = viewModel.isSearchingLyrics.collectAsStateWithLifecycle().value,
                         lyricsSearchError = viewModel.lyricsSearchError.collectAsStateWithLifecycle().value,
+                        connectedDeviceName = connectedDeviceName,
                         onSearchLyricsOnline = { trackId, title, artist -> viewModel.searchLyricsOnline(trackId, title, artist) },
                         onUpdateLyrics = { trackId, newLyrics -> viewModel.updateTrackLyrics(trackId, newLyrics) },
                         isAnalyzingMusic = viewModel.isAnalyzingMusic.collectAsStateWithLifecycle().value,
@@ -240,7 +252,9 @@ fun MusicPlayerApp(
                         onToggleFavorite = { viewModel.toggleFavorite(track.id) },
                         onToggleShuffle = { viewModel.toggleShuffle() },
                         onToggleRepeat = { viewModel.toggleRepeat() },
-                        onAddToPlaylist = { showAddPlaylistDialogTrack = track }
+                        onAddToPlaylist = { showAddPlaylistDialogTrack = track },
+                        onEqualizerClick = { showEqualizerDialogTrack = track },
+                        onBluetoothClick = { showBluetoothDialog = true }
                     )
                 }
             }
@@ -272,6 +286,29 @@ fun MusicPlayerApp(
             }
         )
     }
+
+    if (trackBeingManaged != null) {
+        TrackManagementDialog(
+            track = trackBeingManaged!!,
+            viewModel = viewModel,
+            onDismiss = { trackBeingManaged = null }
+        )
+    }
+
+    showEqualizerDialogTrack?.let { eqTrack ->
+        EqualizerDialog(
+            track = eqTrack,
+            viewModel = viewModel,
+            onDismiss = { showEqualizerDialogTrack = null }
+        )
+    }
+
+    if (showBluetoothDialog) {
+        BluetoothDeviceSelectorDialog(
+            viewModel = viewModel,
+            onDismiss = { showBluetoothDialog = false }
+        )
+    }
 }
 
 // === HOME SCREEN ===
@@ -280,7 +317,8 @@ fun MusicPlayerApp(
 fun HomeScreen(
     viewModel: MusicViewModel,
     paddingValues: PaddingValues,
-    onAddToPlaylist: (Track) -> Unit
+    onAddToPlaylist: (Track) -> Unit,
+    onManageTrack: (Track) -> Unit
 ) {
     val allTracks by viewModel.filteredTracks.collectAsStateWithLifecycle()
     val historyTracks by viewModel.history.collectAsStateWithLifecycle()
@@ -425,7 +463,8 @@ fun HomeScreen(
                     waveAmplitudes = viewModel.audioWaveAmplitudes.collectAsStateWithLifecycle().value,
                     onClick = { viewModel.playTrackNow(track, filteredTracks) },
                     onAddToPlaylist = { onAddToPlaylist(track) },
-                    onToggleFavorite = { viewModel.toggleFavorite(track.id) }
+                    onToggleFavorite = { viewModel.toggleFavorite(track.id) },
+                    onManageTrack = { onManageTrack(track) }
                 )
             }
         }
@@ -438,7 +477,8 @@ fun HomeScreen(
 fun SearchScreen(
     viewModel: MusicViewModel,
     paddingValues: PaddingValues,
-    onAddToPlaylist: (Track) -> Unit
+    onAddToPlaylist: (Track) -> Unit,
+    onManageTrack: (Track) -> Unit
 ) {
     val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
     val searchResults by viewModel.searchResults.collectAsStateWithLifecycle()
@@ -616,7 +656,8 @@ fun SearchScreen(
                             waveAmplitudes = viewModel.audioWaveAmplitudes.collectAsStateWithLifecycle().value,
                             onClick = { viewModel.playTrackNow(track, filteredSearchResults) },
                             onAddToPlaylist = { onAddToPlaylist(track) },
-                            onToggleFavorite = { viewModel.toggleFavorite(track.id) }
+                            onToggleFavorite = { viewModel.toggleFavorite(track.id) },
+                            onManageTrack = { onManageTrack(track) }
                         )
                     }
                 }
@@ -1330,154 +1371,185 @@ fun SettingsScreen(
                         }
 
                         if (!hasStoragePermission) {
-                            Button(
-                                onClick = {
-                                    permissionLauncher.launch(
-                                        if (android.os.Build.VERSION.SDK_INT >= 33) {
-                                            android.Manifest.permission.READ_MEDIA_AUDIO
-                                        } else {
-                                            android.Manifest.permission.READ_EXTERNAL_STORAGE
-                                        }
-                                    )
-                                },
-                                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                            Card(
+                                modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.5f)
+                                ),
                                 shape = RoundedCornerShape(12.dp)
                             ) {
-                                Icon(Icons.Filled.Lock, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Conceder Permiso")
-                            }
-                        } else {
-                            // List of Music Folders
-                            Text(
-                                text = "Carpetas de Música Registradas:",
-                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold)
-                            )
-                            
-                            if (musicFolders.isEmpty()) {
-                                Text(
-                                    text = "No hay carpetas añadidas aún.",
-                                    style = MaterialTheme.typography.bodySmall.copy(
-                                        color = MaterialTheme.colorScheme.outline
-                                    ),
-                                    modifier = Modifier.padding(start = 4.dp)
-                                )
-                            } else {
-                                musicFolders.forEach { path ->
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clip(RoundedCornerShape(8.dp))
-                                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-                                            .padding(horizontal = 8.dp, vertical = 6.dp),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.weight(1f),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Filled.FolderOpen,
-                                                contentDescription = null,
-                                                tint = MaterialTheme.colorScheme.secondary,
-                                                modifier = Modifier.size(16.dp)
-                                            )
-                                            Text(
-                                                text = path,
-                                                style = MaterialTheme.typography.bodySmall,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                        }
-                                        IconButton(
-                                            onClick = {
-                                                if (filterFolderPath == path) {
-                                                    viewModel.setFolderPathFilter(null)
-                                                }
-                                                viewModel.removeMusicFolder(path)
-                                            },
-                                            modifier = Modifier.size(24.dp)
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Filled.Close,
-                                                contentDescription = "Eliminar carpeta",
-                                                tint = MaterialTheme.colorScheme.error,
-                                                modifier = Modifier.size(16.dp)
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-
-                            Row(
-                                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                OutlinedButton(
-                                    onClick = { showFolderExplorer = true },
-                                    modifier = Modifier.weight(1f).heightIn(min = 48.dp),
-                                    shape = RoundedCornerShape(12.dp)
-                                ) {
-                                    Icon(Icons.Filled.FolderOpen, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text("Añadir Carpeta", maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                }
-
-                                Button(
-                                    onClick = { viewModel.scanFolders() },
-                                    modifier = Modifier.weight(1f).heightIn(min = 48.dp),
-                                    shape = RoundedCornerShape(12.dp),
-                                    enabled = !isScanning && musicFolders.isNotEmpty()
-                                ) {
-                                    if (isScanning) {
-                                        CircularProgressIndicator(
-                                            modifier = Modifier.size(16.dp),
-                                            strokeWidth = 2.dp,
-                                            color = MaterialTheme.colorScheme.onPrimary
-                                        )
-                                    } else {
-                                        Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Escanear", maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                    }
-                                }
-                            }
-
-                            // Scan Status Banner representation
-                            scanStatus?.let { status ->
                                 Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f))
-                                        .padding(horizontal = 8.dp, vertical = 6.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
+                                    modifier = Modifier.padding(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                                 ) {
-                                    Text(
-                                        text = status,
-                                        style = MaterialTheme.typography.bodySmall.copy(
-                                            color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                            fontWeight = FontWeight.Medium
-                                        ),
-                                        modifier = Modifier.weight(1f)
+                                    Icon(
+                                        Icons.Filled.Info,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.error
                                     )
-                                    IconButton(
-                                        onClick = { viewModel.resetScanStatus() },
-                                        modifier = Modifier.size(24.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Filled.Close,
-                                            contentDescription = "Limpiar estado",
-                                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                                            modifier = Modifier.size(14.dp)
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            "Permiso de Almacenamiento ausente",
+                                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold)
                                         )
+                                        Text(
+                                            "Algunas carpetas de música podrían no ser listadas sin permiso.",
+                                            style = MaterialTheme.typography.bodySmall
+                                        )
+                                    }
+                                    Button(
+                                        onClick = {
+                                            permissionLauncher.launch(
+                                                if (android.os.Build.VERSION.SDK_INT >= 33) {
+                                                    android.Manifest.permission.READ_MEDIA_AUDIO
+                                                } else {
+                                                    android.Manifest.permission.READ_EXTERNAL_STORAGE
+                                                }
+                                            )
+                                        },
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = MaterialTheme.colorScheme.error
+                                        ),
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                        shape = RoundedCornerShape(8.dp),
+                                        modifier = Modifier.height(34.dp)
+                                    ) {
+                                        Text("Activar", style = MaterialTheme.typography.bodySmall)
                                     }
                                 }
                             }
                         }
+
+                        // ALWAYS VISIBLE: List of Music Folders
+                        Text(
+                            text = "Carpetas de Música Registradas:",
+                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold)
+                        )
+                        
+                        if (musicFolders.isEmpty()) {
+                            Text(
+                                text = "No hay carpetas añadidas aún.",
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    color = MaterialTheme.colorScheme.outline
+                                ),
+                                modifier = Modifier.padding(start = 4.dp)
+                             )
+                        } else {
+                            musicFolders.forEach { path ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                         .clip(RoundedCornerShape(8.dp))
+                                         .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                                         .padding(horizontal = 8.dp, vertical = 6.dp),
+                                     horizontalArrangement = Arrangement.SpaceBetween,
+                                     verticalAlignment = Alignment.CenterVertically
+                                 ) {
+                                     Row(
+                                         modifier = Modifier.weight(1f),
+                                         verticalAlignment = Alignment.CenterVertically,
+                                         horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                     ) {
+                                         Icon(
+                                             imageVector = Icons.Filled.FolderOpen,
+                                             contentDescription = null,
+                                             tint = MaterialTheme.colorScheme.secondary,
+                                             modifier = Modifier.size(16.dp)
+                                         )
+                                         Text(
+                                             text = path,
+                                             style = MaterialTheme.typography.bodySmall,
+                                             maxLines = 1,
+                                             overflow = TextOverflow.Ellipsis
+                                         )
+                                     }
+                                     IconButton(
+                                         onClick = {
+                                             if (filterFolderPath == path) {
+                                                 viewModel.setFolderPathFilter(null)
+                                             }
+                                             viewModel.removeMusicFolder(path)
+                                         },
+                                         modifier = Modifier.size(24.dp)
+                                     ) {
+                                         Icon(
+                                             imageVector = Icons.Filled.Close,
+                                             contentDescription = "Eliminar carpeta",
+                                             tint = MaterialTheme.colorScheme.error,
+                                             modifier = Modifier.size(16.dp)
+                                         )
+                                     }
+                                 }
+                             }
+                         }
+
+                         Row(
+                             modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                             horizontalArrangement = Arrangement.spacedBy(8.dp)
+                         ) {
+                             OutlinedButton(
+                                 onClick = { showFolderExplorer = true },
+                                 modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                                 shape = RoundedCornerShape(12.dp)
+                             ) {
+                                 Icon(Icons.Filled.FolderOpen, contentDescription = null, modifier = Modifier.size(16.dp))
+                                 Spacer(modifier = Modifier.width(6.dp))
+                                 Text("Añadir Carpeta", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                             }
+
+                             Button(
+                                 onClick = { viewModel.scanFolders() },
+                                 modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                                 shape = RoundedCornerShape(12.dp),
+                                 enabled = !isScanning && musicFolders.isNotEmpty()
+                             ) {
+                                 if (isScanning) {
+                                     CircularProgressIndicator(
+                                         modifier = Modifier.size(16.dp),
+                                         strokeWidth = 2.dp,
+                                         color = MaterialTheme.colorScheme.onPrimary
+                                     )
+                                 } else {
+                                     Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                                     Spacer(modifier = Modifier.width(6.dp))
+                                     Text("Escanear", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                 }
+                             }
+                         }
+
+                         // Scan Status Banner representation
+                         scanStatus?.let { status ->
+                             Row(
+                                 modifier = Modifier
+                                     .fillMaxWidth()
+                                     .clip(RoundedCornerShape(8.dp))
+                                     .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f))
+                                     .padding(horizontal = 8.dp, vertical = 6.dp),
+                                 horizontalArrangement = Arrangement.SpaceBetween,
+                                 verticalAlignment = Alignment.CenterVertically
+                             ) {
+                                 Text(
+                                     text = status,
+                                     style = MaterialTheme.typography.bodySmall.copy(
+                                         color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                         fontWeight = FontWeight.Medium
+                                     ),
+                                     modifier = Modifier.weight(1f)
+                                 )
+                                 IconButton(
+                                     onClick = { viewModel.resetScanStatus() },
+                                     modifier = Modifier.size(24.dp)
+                                 ) {
+                                     Icon(
+                                         imageVector = Icons.Filled.Close,
+                                         contentDescription = "Limpiar estado",
+                                         tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                         modifier = Modifier.size(14.dp)
+                                     )
+                                 }
+                             }
+                         }
                     }
                 }
             }
@@ -1630,6 +1702,7 @@ fun ExpandedPlayerScreen(
     queue: List<Track>,
     isSearchingLyrics: Boolean,
     lyricsSearchError: String?,
+    connectedDeviceName: String = "Altavoz del Teléfono",
     onSearchLyricsOnline: (Long, String, String) -> Unit,
     onUpdateLyrics: (Long, String) -> Unit,
     isAnalyzingMusic: Boolean,
@@ -1644,7 +1717,9 @@ fun ExpandedPlayerScreen(
     onToggleFavorite: () -> Unit,
     onToggleShuffle: () -> Unit,
     onToggleRepeat: () -> Unit,
-    onAddToPlaylist: () -> Unit
+    onAddToPlaylist: () -> Unit,
+    onEqualizerClick: () -> Unit,
+    onBluetoothClick: () -> Unit
 ) {
     var activeSubPage by remember { mutableStateOf(0) } // 0 = Player Controls, 1 = Lyrics, 2 = Queue list, 3 = AI Analysis
     val accentColor = remember(track.accentColorHex) {
@@ -1775,13 +1850,16 @@ fun ExpandedPlayerScreen(
                         isShuffle = isShuffle,
                         isRepeat = isRepeat,
                         accentColor = accentColor,
+                        connectedDeviceName = connectedDeviceName,
                         onPlayPauseToggle = onPlayPauseToggle,
                         onNext = onNext,
                         onPrevious = onPrevious,
                         onSeek = onSeek,
                         onToggleFavorite = onToggleFavorite,
                         onToggleShuffle = onToggleShuffle,
-                        onToggleRepeat = onToggleRepeat
+                        onToggleRepeat = onToggleRepeat,
+                        onEqualizerClick = onEqualizerClick,
+                        onBluetoothClick = onBluetoothClick
                     )
                 }
                 1 -> {
@@ -1830,13 +1908,16 @@ fun PlayerControlsPage(
     isShuffle: Boolean,
     isRepeat: Boolean,
     accentColor: Color,
+    connectedDeviceName: String = "Altavoz del Teléfono",
     onPlayPauseToggle: () -> Unit,
     onNext: () -> Unit,
     onPrevious: () -> Unit,
     onSeek: (Long) -> Unit,
     onToggleFavorite: () -> Unit,
     onToggleShuffle: () -> Unit,
-    onToggleRepeat: () -> Unit
+    onToggleRepeat: () -> Unit,
+    onEqualizerClick: () -> Unit,
+    onBluetoothClick: () -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -1863,55 +1944,113 @@ fun PlayerControlsPage(
                 ),
             contentAlignment = Alignment.Center
         ) {
-            // Subtle rotating inner vinyl detail in background for a real native music feeling
-            val infiniteTransition = rememberInfiniteTransition(label = "VinylSpin")
-            val rotationAngle by infiniteTransition.animateFloat(
-                initialValue = 0f,
-                targetValue = 360f,
-                animationSpec = infiniteRepeatable(
-                    animation = tween(15000, easing = LinearEasing),
-                    repeatMode = RepeatMode.Restart
-                ),
-                label = "Rotation"
-            )
-
-            val finalRotation = if (isPlaying) rotationAngle else 0f
-
-            Box(
-                modifier = Modifier
-                    .size(165.dp)
-                    .graphicsLayer { rotationZ = finalRotation }
-                    .shadow(4.dp, CircleShape)
-                    .clip(CircleShape)
-                    .background(Color.Black.copy(alpha = 0.85f))
-                    .drawBehind {
-                        // Vinyl record micro grooves
-                        val radiusStep = size.minDimension / 10
-                        for (i in 1..4) {
-                            drawCircle(
-                                color = Color.White.copy(alpha = 0.12f),
-                                radius = radiusStep * i,
-                                style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.5f)
-                            )
-                        }
-                    },
-                contentAlignment = Alignment.Center
-            ) {
-                // Vinyl center core
+            if (track.coverUrl.isNotBlank()) {
+                AsyncImage(
+                    model = track.coverUrl,
+                    contentDescription = "Portada de la canción",
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = androidx.compose.ui.layout.ContentScale.Crop
+                )
+                // Glossy gradient visual overlay
                 Box(
                     modifier = Modifier
-                        .size(54.dp)
+                        .fillMaxSize()
+                        .background(
+                            Brush.verticalGradient(
+                                colors = listOf(
+                                    Color.Transparent,
+                                    Color.Black.copy(alpha = 0.4f)
+                                )
+                            )
+                        )
+                )
+            } else {
+                // Subtle rotating inner vinyl detail in background for a real native music feeling
+                val infiniteTransition = rememberInfiniteTransition(label = "VinylSpin")
+                val rotationAngle by infiniteTransition.animateFloat(
+                    initialValue = 0f,
+                    targetValue = 360f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(15000, easing = LinearEasing),
+                        repeatMode = RepeatMode.Restart
+                    ),
+                    label = "Rotation"
+                )
+
+                val finalRotation = if (isPlaying) rotationAngle else 0f
+
+                Box(
+                    modifier = Modifier
+                        .size(175.dp)
+                        .graphicsLayer { rotationZ = finalRotation }
+                        .shadow(6.dp, CircleShape)
                         .clip(CircleShape)
-                        .background(accentColor)
+                        .background(Color.Black.copy(alpha = 0.9f))
+                        .drawBehind {
+                            // Rich vinyl record micro grooves with gradient feel
+                            val radiusStep = size.minDimension / 12
+                            for (i in 1..5) {
+                                drawCircle(
+                                    color = Color.White.copy(alpha = 0.08f),
+                                    radius = radiusStep * i,
+                                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2f)
+                                )
+                            }
+                        },
+                    contentAlignment = Alignment.Center
                 ) {
-                    Icon(
-                        imageVector = Icons.Filled.MusicNote,
-                        contentDescription = null,
-                        tint = Color.White,
+                    // Outer vinyl rim shine
+                    Box(
                         modifier = Modifier
-                            .size(24.dp)
-                            .align(Alignment.Center)
+                            .fillMaxSize()
+                            .drawBehind {
+                                drawArc(
+                                    color = Color.White.copy(alpha = 0.06f),
+                                    startAngle = -45f,
+                                    sweepAngle = 90f,
+                                    useCenter = false,
+                                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = 8f)
+                                )
+                                drawArc(
+                                    color = Color.White.copy(alpha = 0.06f),
+                                    startAngle = 135f,
+                                    sweepAngle = 90f,
+                                    useCenter = false,
+                                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = 8f)
+                                )
+                            }
                     )
+                    // Vinyl center core label with song title initials or beautiful note icon!
+                    val initials = if (track.title.length >= 2) {
+                        track.title.take(2).uppercase()
+                    } else if (track.title.isNotEmpty()) {
+                        track.title.take(1).uppercase()
+                    } else {
+                        "♫"
+                    }
+                    Box(
+                        modifier = Modifier
+                            .size(60.dp)
+                            .shadow(2.dp, CircleShape)
+                            .clip(CircleShape)
+                            .background(
+                                Brush.linearGradient(
+                                    colors = listOf(
+                                        accentColor,
+                                        accentColor.copy(alpha = 0.7f)
+                                    )
+                                )
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = initials,
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                        )
+                    }
                 }
             }
         }
@@ -2063,7 +2202,7 @@ fun PlayerControlsPage(
                 modifier = Modifier
                     .clip(RoundedCornerShape(20.dp))
                     .background(MaterialTheme.colorScheme.surfaceVariant)
-                    .clickable { /* Choose playback output device */ }
+                    .clickable { onBluetoothClick() }
                     .padding(horizontal = 14.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -2075,7 +2214,7 @@ fun PlayerControlsPage(
                     modifier = Modifier.size(16.dp)
                 )
                 Text(
-                    text = "Pixel Buds Pro",
+                    text = connectedDeviceName,
                     style = MaterialTheme.typography.bodySmall.copy(
                         color = MaterialTheme.colorScheme.primary,
                         fontWeight = FontWeight.Bold
@@ -2101,7 +2240,7 @@ fun PlayerControlsPage(
                 }
 
                 IconButton(
-                    onClick = { /* Sound equalizer */ },
+                    onClick = onEqualizerClick,
                     modifier = Modifier.size(36.dp)
                 ) {
                     Icon(
@@ -2490,7 +2629,8 @@ fun TrackListItem(
     waveAmplitudes: List<Float>,
     onClick: () -> Unit,
     onAddToPlaylist: () -> Unit,
-    onToggleFavorite: () -> Unit
+    onToggleFavorite: () -> Unit,
+    onManageTrack: () -> Unit
 ) {
     val isCurrent = currentTrack != null && currentTrack.id == track.id
     val accentColor = remember(track.accentColorHex) {
@@ -2518,13 +2658,24 @@ fun TrackListItem(
                 modifier = Modifier
                     .size(52.dp)
                     .clip(RoundedCornerShape(8.dp))
-                    .background(accentColor.copy(alpha = 0.15f))
-                    .drawBehind {
-                        drawCircle(color = accentColor, radius = size.minDimension / 4)
-                    },
+                    .background(
+                        Brush.linearGradient(
+                            colors = listOf(
+                                accentColor.copy(alpha = 0.45f),
+                                accentColor
+                            )
+                        )
+                    ),
                 contentAlignment = Alignment.Center
             ) {
-                if (isCurrent && isPlaying) {
+                if (track.coverUrl.isNotBlank()) {
+                    AsyncImage(
+                        model = track.coverUrl,
+                        contentDescription = "Portada",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = androidx.compose.ui.layout.ContentScale.Crop
+                    )
+                } else if (isCurrent && isPlaying) {
                     // Small inline sound visualizer instead of static play icon
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(3.dp),
@@ -2537,15 +2688,18 @@ fun TrackListItem(
                                 modifier = Modifier
                                     .width(3.dp)
                                     .fillMaxHeight(ampState.coerceIn(0.2f, 0.9f))
-                                    .background(accentColor)
+                                    .background(Color.White)
                             )
                         }
                     }
                 } else {
-                    Icon(
-                        imageVector = Icons.Filled.PlayArrow,
-                        contentDescription = "Reproducir",
-                        tint = accentColor
+                    val initials = if (track.title.isNotEmpty()) track.title.take(1).uppercase() else "♫"
+                    Text(
+                        text = initials,
+                        style = MaterialTheme.typography.titleMedium.copy(
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White.copy(alpha = 0.9f)
+                        )
                     )
                 }
             }
@@ -2586,6 +2740,14 @@ fun TrackListItem(
                 Icon(
                     Icons.Filled.PlaylistAdd,
                     contentDescription = "Añadir a Playlist",
+                    tint = MaterialTheme.colorScheme.outline
+                )
+            }
+
+            IconButton(onClick = onManageTrack) {
+                Icon(
+                    Icons.Filled.Tune,
+                    contentDescription = "Gestionar Canción",
                     tint = MaterialTheme.colorScheme.outline
                 )
             }
@@ -3200,6 +3362,72 @@ fun FolderExplorerDialog(
 
                 Spacer(modifier = Modifier.height(12.dp))
 
+                // Quick storage jump location row
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    val rootInternal = android.os.Environment.getExternalStorageDirectory()
+                    val rootStorage = java.io.File("/storage")
+                    
+                    val isInternalSelected = currentDir.absolutePath == rootInternal.absolutePath
+                    val isSDSelected = currentDir.absolutePath == "/storage" || (currentDir.absolutePath.startsWith("/storage/") && !currentDir.absolutePath.startsWith("/storage/emulated"))
+
+                    Button(
+                        onClick = { currentDir = rootInternal },
+                        modifier = Modifier.weight(1f).height(38.dp),
+                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = if (isInternalSelected) {
+                            ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                        } else {
+                            ButtonDefaults.filledTonalButtonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                        }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Info,
+                            contentDescription = null,
+                            tint = if (isInternalSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "Alm. Interno",
+                            style = MaterialTheme.typography.labelMedium.copy(
+                                color = if (isInternalSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+                            ),
+                            maxLines = 1
+                        )
+                    }
+
+                    Button(
+                        onClick = { currentDir = if (rootStorage.exists()) rootStorage else rootInternal },
+                        modifier = Modifier.weight(1f).height(38.dp),
+                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = if (isSDSelected) {
+                            ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                        } else {
+                            ButtonDefaults.filledTonalButtonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                        }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Folder,
+                            contentDescription = null,
+                            tint = if (isSDSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "Tarjeta SD / Raíz",
+                            style = MaterialTheme.typography.labelMedium.copy(
+                                color = if (isSDSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+                            ),
+                            maxLines = 1
+                        )
+                    }
+                }
+
                 // Current Route Badge
                 Row(
                     modifier = Modifier
@@ -3695,6 +3923,1100 @@ fun MusicAnalysisLoadingView(accentColor: Color) {
             textAlign = TextAlign.Center,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun TrackManagementDialog(
+    track: Track,
+    viewModel: MusicViewModel,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    var editTitle by remember { mutableStateOf(track.title) }
+    var editArtist by remember { mutableStateOf(track.artist) }
+    var editAlbum by remember { mutableStateOf(track.album) }
+    var editCategory by remember { mutableStateOf(track.category) }
+    var editCoverUrl by remember { mutableStateOf(track.coverUrl) }
+    var isFavorite by remember { mutableStateOf(track.isFavorite) }
+
+    val galleryLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.GetContent()
+    ) { uri: android.net.Uri? ->
+        if (uri != null) {
+            try {
+                val inputStream = context.contentResolver.openInputStream(uri)
+                if (inputStream != null) {
+                    val cacheDir = context.cacheDir
+                    val file = java.io.File(cacheDir, "custom_cover_${System.currentTimeMillis()}.jpg")
+                    file.outputStream().use { output ->
+                        inputStream.copyTo(output)
+                    }
+                    editCoverUrl = "file://" + file.absolutePath
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("TrackManagementDialog", "Error loading custom cover", e)
+            }
+        }
+    }
+
+    // AI research state
+    val aiState by viewModel.aiRetrievalState.collectAsStateWithLifecycle()
+    
+    // Trimming options
+    val totalDurationMs = track.durationMs
+    var startMs by remember { mutableStateOf(0L) }
+    var endMs by remember { mutableStateOf(totalDurationMs) }
+    
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+    var permissionDeniedAlert by remember { mutableStateOf(false) }
+    var trimResultPath by remember { mutableStateOf<String?>(null) }
+    var actionStatusMessage by remember { mutableStateOf<String?>(null) }
+
+    val formatTime = remember {
+        { ms: Long ->
+            val secs = ms / 1000
+            val m = secs / 60
+            val s = secs % 60
+            String.format(Locale.getDefault(), "%02d:%02d", m, s)
+        }
+    }
+
+    LaunchedEffect(track) {
+        viewModel.resetAiMetadataState()
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.background
+        ) {
+            Column(
+                modifier = Modifier.fillMaxSize()
+            ) {
+                // Immersive Toolbar
+                CenterAlignedTopAppBar(
+                    title = {
+                        Text(
+                            "Gestor de Canción",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                        )
+                    },
+                    navigationIcon = {
+                        IconButton(onClick = onDismiss) {
+                            Icon(Icons.Filled.Close, contentDescription = "Cerrar")
+                        }
+                    },
+                    actions = {
+                        TextButton(
+                            onClick = {
+                                val updated = track.copy(
+                                    title = editTitle,
+                                    artist = editArtist,
+                                    album = editAlbum,
+                                    category = editCategory,
+                                    coverUrl = editCoverUrl,
+                                    isFavorite = isFavorite
+                                )
+                                viewModel.updateTrack(updated)
+                                onDismiss()
+                            }
+                        ) {
+                            Text(
+                                "GUARDAR",
+                                style = MaterialTheme.typography.labelLarge.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            )
+                        }
+                    },
+                    colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                    )
+                )
+
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 20.dp, vertical = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(20.dp)
+                ) {
+                    // Quick Metadata Header card with cover preview
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.15f)
+                        ),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(80.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f))
+                                    .clickable { galleryLauncher.launch("image/*") },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (editCoverUrl.isNotBlank()) {
+                                    AsyncImage(
+                                        model = editCoverUrl,
+                                        contentDescription = "Vista previa portada",
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentScale = androidx.compose.ui.layout.ContentScale.Crop
+                                    )
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .background(Color.Black.copy(alpha = 0.45f)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Filled.PhotoCamera,
+                                            contentDescription = "Cambiar",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(24.dp)
+                                        )
+                                    }
+                                } else {
+                                    Column(
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        verticalArrangement = Arrangement.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Filled.PhotoCamera,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(28.dp)
+                                        )
+                                        Spacer(modifier = Modifier.height(2.dp))
+                                        Text(
+                                            "Elegir",
+                                            style = MaterialTheme.typography.bodySmall.copy(
+                                                fontSize = 11.sp,
+                                                color = MaterialTheme.colorScheme.primary,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        )
+                                    }
+                                }
+                            }
+                            Spacer(modifier = Modifier.width(16.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = editTitle,
+                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = editArtist,
+                                    style = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.outline),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        text = "Favorita: ",
+                                        style = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.outline)
+                                    )
+                                    IconButton(
+                                        onClick = { isFavorite = !isFavorite },
+                                        modifier = Modifier.size(24.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = if (isFavorite) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
+                                            contentDescription = "Favorito",
+                                            tint = if (isFavorite) Color.Red else MaterialTheme.colorScheme.outline,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // System / Action Notifications
+                    if (actionStatusMessage != null) {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.8f)
+                            ),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = actionStatusMessage!!,
+                                    style = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onPrimaryContainer),
+                                    modifier = Modifier.weight(1f)
+                                )
+                                IconButton(
+                                    onClick = { actionStatusMessage = null },
+                                    modifier = Modifier.size(28.dp)
+                                ) {
+                                    Icon(Icons.Filled.Close, contentDescription = "Cerrar", modifier = Modifier.size(16.dp))
+                                }
+                            }
+                        }
+                    }
+
+                    // Metadata Fields
+                    Text(
+                        "Información de la pista",
+                        style = MaterialTheme.typography.titleSmall.copy(
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    )
+
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        OutlinedTextField(
+                            value = editTitle,
+                            onValueChange = { editTitle = it },
+                            label = { Text("Título") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            shape = RoundedCornerShape(10.dp)
+                        )
+
+                        OutlinedTextField(
+                            value = editArtist,
+                            onValueChange = { editArtist = it },
+                            label = { Text("Artista") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            shape = RoundedCornerShape(10.dp)
+                        )
+
+                        OutlinedTextField(
+                            value = editAlbum,
+                            onValueChange = { editAlbum = it },
+                            label = { Text("Álbum") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            shape = RoundedCornerShape(10.dp)
+                        )
+
+                        OutlinedTextField(
+                            value = editCategory,
+                            onValueChange = { editCategory = it },
+                            label = { Text("Género / Categoría") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            shape = RoundedCornerShape(10.dp)
+                        )
+
+                        OutlinedTextField(
+                            value = editCoverUrl,
+                            onValueChange = { editCoverUrl = it },
+                            label = { Text("URL de la Portada") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            shape = RoundedCornerShape(10.dp)
+                        )
+                    }
+
+                    // GEMINI AI INVESTIGATION BLOCK
+                    ElevatedCard(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.elevatedCardColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f)
+                        ),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        imageVector = Icons.Filled.AutoAwesome,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        "Automación Inteligente",
+                                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                                    )
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f))
+                                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                                ) {
+                                    Text(
+                                        "PRO",
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    )
+                                }
+                            }
+
+                            Text(
+                                "Investiga de manera automática con la IA de Google Gemini para rellenar el título exacto, el artista oficial, álbum, género real y una portada adecuada.",
+                                style = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            )
+
+                            Button(
+                                onClick = {
+                                    viewModel.researchMetadataWithAi(editTitle, editArtist)
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp),
+                                contentPadding = PaddingValues(vertical = 12.dp)
+                            ) {
+                                Icon(Icons.Filled.AutoAwesome, contentDescription = null)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Investigar con Gemini")
+                            }
+
+                            // AI States Responses
+                            when (val state = aiState) {
+                                is AiRetrievalState.Loading -> {
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(top = 12.dp),
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        CircularProgressIndicator(modifier = Modifier.size(32.dp))
+                                        Text("Revisando base de datos musical con Gemini...", style = MaterialTheme.typography.bodyMedium)
+                                    }
+                                }
+                                is AiRetrievalState.Error -> {
+                                    Text(
+                                        text = state.message,
+                                        color = MaterialTheme.colorScheme.error,
+                                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                                        modifier = Modifier.padding(top = 8.dp)
+                                    )
+                                }
+                                is AiRetrievalState.Success -> {
+                                    val meta = state.metadata
+                                    Card(
+                                        colors = CardDefaults.cardColors(
+                                            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+                                        ),
+                                        shape = RoundedCornerShape(12.dp),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(top = 12.dp)
+                                    ) {
+                                        Column(
+                                            modifier = Modifier.padding(12.dp),
+                                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                                        ) {
+                                            Text(
+                                                "Sugerencia encontrada por la IA:",
+                                                style = MaterialTheme.typography.bodyMedium.copy(
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = MaterialTheme.colorScheme.primary
+                                                )
+                                            )
+                                            
+                                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                                if (meta.coverUrl.isNotBlank()) {
+                                                    AsyncImage(
+                                                        model = meta.coverUrl,
+                                                        contentDescription = null,
+                                                        modifier = Modifier
+                                                            .size(64.dp)
+                                                            .clip(RoundedCornerShape(6.dp)),
+                                                        contentScale = androidx.compose.ui.layout.ContentScale.Crop
+                                                    )
+                                                }
+                                                Column {
+                                                    Text("• Título: ${meta.title}", style = MaterialTheme.typography.bodyMedium)
+                                                    Text("• Artista: ${meta.artist}", style = MaterialTheme.typography.bodyMedium)
+                                                    Text("• Álbum: ${meta.album}", style = MaterialTheme.typography.bodyMedium)
+                                                    Text("• Género: ${meta.genre}", style = MaterialTheme.typography.bodyMedium)
+                                                }
+                                            }
+
+                                            Button(
+                                                onClick = {
+                                                    editTitle = meta.title
+                                                    editArtist = meta.artist
+                                                    editAlbum = meta.album
+                                                    editCategory = meta.genre
+                                                    if (meta.coverUrl.isNotBlank()) {
+                                                        editCoverUrl = meta.coverUrl
+                                                    }
+                                                    viewModel.resetAiMetadataState()
+                                                    actionStatusMessage = "¡Datos sugeridos cargados temporalmente! Clic en GUARDAR arriba para guardarlos de forma definitiva."
+                                                },
+                                                colors = ButtonDefaults.buttonColors(
+                                                    containerColor = MaterialTheme.colorScheme.secondary
+                                                ),
+                                                modifier = Modifier.fillMaxWidth(),
+                                                shape = RoundedCornerShape(10.dp)
+                                            ) {
+                                                Icon(Icons.Filled.Check, contentDescription = null)
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Text("Aplicar Cambios de IA")
+                                            }
+                                        }
+                                    }
+                                }
+                                else -> {}
+                            }
+                        }
+                    }
+
+                    // TRIMMING AUDIO SECTION
+                    Text(
+                        "Recortar Audio (Tono de llamada)",
+                        style = MaterialTheme.typography.titleSmall.copy(
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    )
+
+                    OutlinedCard(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(14.dp)
+                        ) {
+                            Text(
+                                "Elige el segmento de audio que quieres aislar para usar como tono de llamada.",
+                                style = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            )
+
+                            // Start Slider
+                            Column(modifier = Modifier.fillMaxWidth()) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text("Inicio del recorte:", style = MaterialTheme.typography.bodyMedium)
+                                    Text(
+                                        formatTime(startMs),
+                                        style = MaterialTheme.typography.bodyMedium.copy(
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    )
+                                }
+                                Slider(
+                                    value = startMs.toFloat(),
+                                    onValueChange = { 
+                                        startMs = it.toLong().coerceIn(0L, endMs - 1000L)
+                                    },
+                                    valueRange = 0f..totalDurationMs.toFloat()
+                                )
+                            }
+
+                            // End Slider
+                            Column(modifier = Modifier.fillMaxWidth()) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text("Fin del recorte:", style = MaterialTheme.typography.bodyMedium)
+                                    Text(
+                                        formatTime(endMs),
+                                        style = MaterialTheme.typography.bodyMedium.copy(
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    )
+                                }
+                                Slider(
+                                    value = endMs.toFloat(),
+                                    onValueChange = { 
+                                        endMs = it.toLong().coerceIn(startMs + 1000L, totalDurationMs)
+                                    },
+                                    valueRange = 0f..totalDurationMs.toFloat()
+                                )
+                            }
+
+                            // Result details
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(
+                                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                                        shape = RoundedCornerShape(8.dp)
+                                    )
+                                    .padding(8.dp),
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                Text(
+                                    "Duración del recorte: ${formatTime(endMs - startMs)}",
+                                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium)
+                                )
+                            }
+
+                            Button(
+                                onClick = {
+                                    viewModel.trimTrack(track, startMs, endMs) { path ->
+                                        if (path != null) {
+                                            trimResultPath = path
+                                            actionStatusMessage = "¡Audio recortado con éxito! Se insertó una nueva pista '${track.title} (Recortado)' en la biblioteca."
+                                        } else {
+                                            actionStatusMessage = "Error al intentar recortar el audio de la pista."
+                                        }
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                                ),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Icon(Icons.Filled.ContentCut, contentDescription = null)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Recortar y Guardar en Biblioteca")
+                            }
+                        }
+                    }
+
+                    // DEVICE RINGTONE SETUP
+                    Text(
+                        "Tono del Dispositivo",
+                        style = MaterialTheme.typography.titleSmall.copy(
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    )
+
+                    Button(
+                        onClick = {
+                            viewModel.setAsRingtone(track, context) { success, msg ->
+                                if (success) {
+                                    actionStatusMessage = msg
+                                } else if (msg == "PERMISSION_REQUIRED") {
+                                    permissionDeniedAlert = true
+                                } else {
+                                    actionStatusMessage = msg
+                                }
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        contentPadding = PaddingValues(vertical = 12.dp)
+                    ) {
+                        Icon(Icons.Filled.NotificationsActive, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Establecer como Tono de Llamada")
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    // DELETION BLOCK
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    
+                    Text(
+                        "Acciones peligrosas",
+                        style = MaterialTheme.typography.titleSmall.copy(
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    )
+
+                    Button(
+                        onClick = { showDeleteConfirm = true },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 24.dp),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Icon(Icons.Filled.Delete, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Borrar Canción de la Biblioteca")
+                    }
+                }
+            }
+        }
+    }
+
+    // Deletion confirmation window
+    if (showDeleteConfirm) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false },
+            title = { Text("Eliminar Canción") },
+            text = { Text("¿Estás absolutamente seguro de que prefieres eliminar '${track.title}' de tu biblioteca? El archivo físico intacto se preservará pero dejará de listarse aquí.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showDeleteConfirm = false
+                        viewModel.deleteTrack(track.id)
+                        onDismiss()
+                    }
+                ) {
+                    Text("ELIMINAR", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirm = false }) {
+                    Text("CANCELAR")
+                }
+            }
+        )
+    }
+
+    // Permission denied notification system dialog
+    if (permissionDeniedAlert) {
+        AlertDialog(
+            onDismissRequest = { permissionDeniedAlert = false },
+            title = { Text("Permiso Requerido") },
+            text = { Text("Para poder configurar tonos de llamada directamente, es indispensable otorgar permiso del sistema de escritura de configuración de Android.") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        permissionDeniedAlert = false
+                        try {
+                            val intent = Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS).apply {
+                                data = Uri.parse("package:${context.packageName}")
+                                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                            }
+                            context.startActivity(intent)
+                        } catch (e: Exception) {
+                            actionStatusMessage = "No se pudo abrir automáticamente. Por favor abre Ajustes y habilita 'Modificar ajustes del sistema'."
+                        }
+                    }
+                ) {
+                    Text("Autorizar Permiso")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { permissionDeniedAlert = false }) {
+                    Text("Cerrar")
+                }
+            }
+        )
+    }
+}
+
+@Composable
+fun EqualizerDialog(
+    track: Track,
+    viewModel: MusicViewModel,
+    onDismiss: () -> Unit
+) {
+    val bands by viewModel.equalizerBands.collectAsStateWithLifecycle()
+    
+    LaunchedEffect(track.id) {
+        viewModel.refreshEqualizerBandsForTrack(track.id)
+    }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surface
+            )
+        ) {
+            Column(
+                modifier = Modifier
+                    .padding(20.dp)
+                    .fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Ecualizador de Audio",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = track.title,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    IconButton(onClick = onDismiss) {
+                        Icon(
+                            imageVector = Icons.Filled.Close,
+                            contentDescription = "Cerrar",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant, thickness = 1.dp)
+
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    bands.forEach { band ->
+                        val currentDb = band.currentLevelMb / 100
+                        val minDb = band.minLevelMb / 100
+                        val maxDb = band.maxLevelMb / 100
+
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                val freqText = if (band.centerFreqHz >= 1000) {
+                                    "${band.centerFreqHz / 1000} kHz"
+                                } else {
+                                    "${band.centerFreqHz} Hz"
+                                }
+                                Text(
+                                    text = freqText,
+                                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = "${if (currentDb > 0) "+" else ""}$currentDb dB",
+                                    style = MaterialTheme.typography.bodyMedium.copy(
+                                        color = if (currentDb != 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                )
+                            }
+                            
+                            Slider(
+                                value = band.currentLevelMb.toFloat(),
+                                onValueChange = { newValue ->
+                                    viewModel.updateBandLevel(track.id, band.bandIndex, newValue.toInt())
+                                },
+                                valueRange = band.minLevelMb.toFloat()..band.maxLevelMb.toFloat(),
+                                colors = SliderDefaults.colors(
+                                    activeTrackColor = MaterialTheme.colorScheme.primary,
+                                    inactiveTrackColor = MaterialTheme.colorScheme.surfaceVariant,
+                                    thumbColor = MaterialTheme.colorScheme.primary
+                                ),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                    }
+                }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant, thickness = 1.dp)
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    val presets = listOf(
+                        "Plano" to listOf(0, 0, 0, 0, 0),
+                        "Bajos" to listOf(600, 300, 0, 0, -200),
+                        "Voz" to listOf(-200, 0, 400, 500, 100)
+                    )
+                    presets.forEach { (name, values) ->
+                        Button(
+                            onClick = {
+                                values.forEachIndexed { idx, value ->
+                                    if (idx < bands.size) {
+                                        viewModel.updateBandLevel(track.id, bands[idx].bandIndex, value)
+                                    }
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                            ),
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Text(
+                                text = name,
+                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
+                                maxLines = 1
+                            )
+                        }
+                    }
+                }
+
+                Text(
+                    text = "Ajustes guardados automáticamente para esta canción.",
+                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                    color = MaterialTheme.colorScheme.outline,
+                    modifier = Modifier.align(Alignment.CenterHorizontally)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun BluetoothDeviceSelectorDialog(
+    viewModel: MusicViewModel,
+    onDismiss: () -> Unit
+) {
+    val devices by viewModel.bluetoothDevices.collectAsStateWithLifecycle()
+    val connectedDeviceName by viewModel.bluetoothConnectedDeviceName.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+
+    LaunchedEffect(Unit) {
+        viewModel.refreshBluetoothDevices()
+    }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surface
+            )
+        ) {
+            Column(
+                modifier = Modifier
+                    .padding(20.dp)
+                    .fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text(
+                            text = "Dispositivo de Salida",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "Selecciona dónde reproducir la música",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.outline
+                        )
+                    }
+                    IconButton(onClick = onDismiss) {
+                        Icon(
+                            imageVector = Icons.Filled.Close,
+                            contentDescription = "Cerrar",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant, thickness = 1.dp)
+
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.CastConnected,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Column {
+                            Text(
+                                text = "Dispositivo Activo",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                text = connectedDeviceName,
+                                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Bold),
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                        }
+                    }
+                }
+
+                Text(
+                    text = "Dispositivos Vinculados:",
+                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 200.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    val isSpeakerActive = connectedDeviceName == "Altavoz del Teléfono"
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(
+                                if (isSpeakerActive) MaterialTheme.colorScheme.secondaryContainer 
+                                else Color.Transparent
+                            )
+                            .clickable {
+                                viewModel.selectBluetoothDevice("Altavoz del Teléfono")
+                                onDismiss()
+                            }
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.VolumeUp,
+                            contentDescription = null,
+                            tint = if (isSpeakerActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = "Altavoz del Teléfono",
+                            style = MaterialTheme.typography.bodyLarge.copy(
+                                fontWeight = if (isSpeakerActive) FontWeight.Bold else FontWeight.Normal
+                            ),
+                            color = if (isSpeakerActive) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.weight(1f)
+                        )
+                        if (isSpeakerActive) {
+                            Icon(
+                                imageVector = Icons.Filled.Check,
+                                contentDescription = "Activo",
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+
+                    devices.forEach { device ->
+                        val isCurrent = connectedDeviceName == device.name
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(
+                                    if (isCurrent) MaterialTheme.colorScheme.secondaryContainer 
+                                    else Color.Transparent
+                                )
+                                .clickable {
+                                    viewModel.selectBluetoothDevice(device.name)
+                                    onDismiss()
+                                }
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Bluetooth,
+                                contentDescription = null,
+                                tint = if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = device.name,
+                                    style = MaterialTheme.typography.bodyLarge.copy(
+                                        fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal
+                                    ),
+                                    color = if (isCurrent) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurface
+                                )
+                                if (device.isBonded) {
+                                    Text(
+                                        text = "Guardado • ${device.address}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.outline
+                                    )
+                                }
+                            }
+                            if (isCurrent) {
+                                Icon(
+                                    imageVector = Icons.Filled.Check,
+                                    contentDescription = "Activo",
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+                    }
+                }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant, thickness = 1.dp)
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            try {
+                                val intent = Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS).apply {
+                                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                                }
+                                context.startActivity(intent)
+                            } catch (e: Exception) {
+                                android.util.Log.e("MusicPlayerScreen", "Failed to open bluetooth settings", e)
+                            }
+                        },
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = MaterialTheme.colorScheme.primary
+                        ),
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("Vincular Nuevo")
+                    }
+
+                    Button(
+                        onClick = {
+                            viewModel.refreshBluetoothDevices()
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary
+                        ),
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("Actualizar")
+                    }
+                }
+            }
+        }
     }
 }
 

@@ -12,7 +12,7 @@ import androidx.room.RoomDatabase
         PlaylistTrackCrossRef::class,
         PlaybackHistory::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class MusicDatabase : RoomDatabase() {

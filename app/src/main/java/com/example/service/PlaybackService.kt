@@ -15,6 +15,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
 class PlaybackService : Service() {
@@ -41,7 +42,10 @@ class PlaybackService : Service() {
         serviceScope.launch {
             combine(PlaybackStateHelper.currentTrack, PlaybackStateHelper.isPlaying) { track, isPlaying ->
                 Pair(track, isPlaying)
-            }.collect { (track, isPlaying) ->
+            }.distinctUntilChanged().collect { (track, isPlaying) ->
+                // Sync status with our custom launcher App Widget
+                com.example.widget.MusicWidgetProvider.updateAllWidgets(this@PlaybackService, track, isPlaying)
+
                 if (track != null) {
                     showOrUpdateNotification(track, isPlaying)
                 } else {
@@ -84,12 +88,10 @@ class PlaybackService : Service() {
             }
         }
 
-        // Keep updating notification on direct commands
+        // Avoid updating notification redundantly. The distinctUntilChanged flow collector in onCreate
+        // will automatically handle notification updates when state fields are mutated.
         val currentTrackLocal = PlaybackStateHelper.currentTrack.value
-        val isPlayingLocal = PlaybackStateHelper.isPlaying.value
-        if (currentTrackLocal != null) {
-            showOrUpdateNotification(currentTrackLocal, isPlayingLocal)
-        } else {
+        if (currentTrackLocal == null) {
             stopSelf()
         }
 
@@ -223,6 +225,11 @@ class PlaybackService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         serviceScope.cancel()
+        try {
+            com.example.widget.MusicWidgetProvider.updateAllWidgets(this, null, false)
+        } catch (e: Exception) {
+            android.util.Log.e("PlaybackService", "Error clearing widget on destroy", e)
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? {

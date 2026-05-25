@@ -24,6 +24,9 @@ interface MusicDao {
     @Update
     suspend fun updateTrack(track: Track)
 
+    @Delete
+    suspend fun deleteTrack(track: Track)
+
     // === Playlist Queries ===
     @Query("SELECT * FROM playlists ORDER BY createdAt DESC")
     fun getAllPlaylists(): Flow<List<Playlist>>

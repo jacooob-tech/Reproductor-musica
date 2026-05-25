@@ -21,6 +21,14 @@ data class MusicAnalysis(
     val colorSuggestion: String
 )
 
+data class ResearchMetadata(
+    val title: String,
+    val artist: String,
+    val album: String,
+    val genre: String,
+    val coverUrl: String
+)
+
 object GeminiMusicAnalyzer {
     private const val TAG = "GeminiMusicAnalyzer"
     
@@ -149,6 +157,122 @@ object GeminiMusicAnalyzer {
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error executing music AI analysis", e)
+            null
+        }
+    }
+
+    suspend fun researchSongMetadata(
+        title: String,
+        artist: String
+    ): ResearchMetadata? = withContext(Dispatchers.IO) {
+        val apiKey = BuildConfig.GEMINI_API_KEY
+        if (apiKey.isBlank() || apiKey == "MY_GEMINI_API_KEY") {
+            Log.e(TAG, "Gemini API Key is blank or placeholder")
+            return@withContext null
+        }
+
+        val prompt = """
+            Eres un catalogador y archivista musical experto con Inteligencia Artificial.
+            Investiga la información real y correcta para el archivo o canción con el título "$title" e interpretado por "$artist" (si se indica o deduce).
+            Limpia cualquier ruido del nombre de archivo (como .mp3, .m4a, CD-Rip, etc.), faltas de ortografía o nombres de archivo crudos.
+            
+            Proporciona la información real en un formato JSON puro. No agregues formatos markdown como ```json o ```, ni comentarios iniciales o finales.
+            Si no estás seguro del álbum o género real, utiliza tus mejores conocimientos de bases de datos de música para proporcionar uno adecuado y realista.
+            Para el campo "coverUrl", selecciona una de las siguientes URL de imágenes gratuitas de alta resolución de Unsplash correspondientes al género de la canción u obra artística musical. Elige una temática acorde (ej. para techno una imagen abstracta oscura, para lofi algo relajado, para acústico una guitarra o bosque, etc.) usando URLs genéricas seguras como:
+            - https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=500&auto=format&fit=crop (Música General Estudio / Micrófono)
+            - https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=500&auto=format&fit=crop (Conciertos, Pop, Rock, Luces)
+            - https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=500&auto=format&fit=crop (Música Electrónica, Techno, DJ)
+            - https://images.unsplash.com/photo-1459749411175-04bf5292ceea?w=500&auto=format&fit=crop (Rock, Concierto, Escenario)
+            - https://images.unsplash.com/photo-1511379938547-c1f69419868d?w=500&auto=format&fit=crop (Piano Clásico, Acústico, Estudio)
+            - https://images.unsplash.com/photo-1507838153414-b4b713384a76?w=500&auto=format&fit=crop (Sinfónica, Violín, Clásica)
+            - https://images.unsplash.com/photo-1487180142328-0c4e37023af5?w=500&auto=format&fit=crop (Vinilo, Lofi, Jazz)
+            - https://images.unsplash.com/photo-1508700115892-45ecd05ae2ad?w=500&auto=format&fit=crop (Estilo Retro, Synthwave, Luces de Neón)
+            O una URL similar de Unsplash que sea válida para mostrar en la carátula.
+
+            Formato del JSON de respuesta en español:
+            {
+              "title": "Título real u oficial correcto",
+              "artist": "Nombre real u oficial correcto del artista principal",
+              "album": "Nombre oficial del álbum (o 'Sencillo' si no aplica)",
+              "genre": "Género o categoría de música (ej: Pop, Synthwave, Lofi, Rock, Metal, Acoustic, Jazz, Ambient)",
+              "coverUrl": "URL de imagen de Unsplash de la lista seleccionada o similar"
+            }
+        """.trimIndent()
+
+        val escapedPrompt = prompt
+            .replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+            .replace("\t", "\\t")
+
+        val jsonPayload = """
+            {
+              "contents": [
+                {
+                  "parts": [
+                    {
+                      "text": "$escapedPrompt"
+                    }
+                  ]
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=$apiKey"
+        val mediaType = "application/json; charset=utf-8".toMediaType()
+        val requestBody = jsonPayload.toRequestBody(mediaType)
+
+        val request = Request.Builder()
+            .url(endpoint)
+            .post(requestBody)
+            .build()
+
+        try {
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    Log.e(TAG, "Metadata request failed with code: ${response.code}")
+                    return@withContext null
+                }
+                val bodyString = response.body?.string() ?: return@withContext null
+                val jsonResponse = JSONObject(bodyString)
+                val candidates = jsonResponse.optJSONArray("candidates") ?: return@withContext null
+                val candidate = candidates.optJSONObject(0) ?: return@withContext null
+                val content = candidate.optJSONObject("content") ?: return@withContext null
+                val parts = content.optJSONArray("parts") ?: return@withContext null
+                val part = parts.optJSONObject(0) ?: return@withContext null
+                val rawText = part.optString("text")
+                if (rawText.isNullOrBlank()) return@withContext null
+
+                var cleanJson = rawText.trim()
+                if (cleanJson.startsWith("```json")) {
+                    cleanJson = cleanJson.removePrefix("```json")
+                } else if (cleanJson.startsWith("```")) {
+                    cleanJson = cleanJson.removePrefix("```")
+                }
+                if (cleanJson.endsWith("```")) {
+                    cleanJson = cleanJson.removeSuffix("```")
+                }
+                cleanJson = cleanJson.trim()
+
+                val resultObj = JSONObject(cleanJson)
+                val retTitle = resultObj.optString("title", title)
+                val retArtist = resultObj.optString("artist", artist)
+                val retAlbum = resultObj.optString("album", "Sencillo")
+                val retGenre = resultObj.optString("genre", "Ambient")
+                val retCover = resultObj.optString("coverUrl", "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=500&auto=format&fit=crop")
+
+                ResearchMetadata(
+                    title = retTitle,
+                    artist = retArtist,
+                    album = retAlbum,
+                    genre = retGenre,
+                    coverUrl = retCover
+                )
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error researching music data via Gemini", e)
             null
         }
     }

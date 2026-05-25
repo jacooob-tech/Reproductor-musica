@@ -16,7 +16,8 @@ data class Track(
     val lyrics: String,
     val accentColorHex: String, // Used to dynamically colorize the full-screen player background!
     val isFavorite: Boolean = false,
-    val playCount: Int = 0
+    val playCount: Int = 0,
+    val coverUrl: String = ""
 )
 
 @Entity(tableName = "playlists")
