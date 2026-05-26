@@ -5,65 +5,41 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface MusicDao {
-    // === Track Queries ===
-    @Query("SELECT * FROM tracks")
+    @Query("SELECT * FROM tracks ORDER BY dateAdded DESC")
     fun getAllTracks(): Flow<List<Track>>
 
-    @Query("SELECT * FROM tracks WHERE isFavorite = 1")
-    fun getFavoriteTracks(): Flow<List<Track>>
-
-    @Query("SELECT * FROM tracks WHERE id = :id")
+    @Query("SELECT * FROM tracks WHERE id = :id LIMIT 1")
     suspend fun getTrackById(id: Long): Track?
 
-    @Query("SELECT * FROM tracks WHERE title LIKE :query OR artist LIKE :query OR category LIKE :query")
-    fun searchTracks(query: String): Flow<List<Track>>
-
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertTracks(tracks: List<Track>)
+    suspend fun insertTrack(track: Track): Long
 
     @Update
     suspend fun updateTrack(track: Track)
 
-    @Delete
-    suspend fun deleteTrack(track: Track)
+    @Query("DELETE FROM tracks WHERE id = :trackId")
+    suspend fun deleteTrackById(trackId: Long)
 
-    // === Playlist Queries ===
-    @Query("SELECT * FROM playlists ORDER BY createdAt DESC")
+    // Playlists
+    @Query("SELECT * FROM playlists ORDER BY name ASC")
     fun getAllPlaylists(): Flow<List<Playlist>>
-
-    @Query("SELECT * FROM playlists WHERE id = :id")
-    suspend fun getPlaylistById(id: Long): Playlist?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertPlaylist(playlist: Playlist): Long
 
     @Query("DELETE FROM playlists WHERE id = :playlistId")
-    suspend fun deletePlaylist(playlistId: Long)
+    suspend fun deletePlaylistById(playlistId: Long)
 
-    @Insert(onConflict = OnConflictStrategy.IGNORE)
-    suspend fun insertPlaylistTrackCrossRef(crossRef: PlaylistTrackCrossRef)
-
-    @Query("DELETE FROM playlist_track_cross_ref WHERE playlistId = :playlistId AND trackId = :trackId")
-    suspend fun removeTrackFromPlaylist(playlistId: Long, trackId: Long)
-
-    @Query("""
-        SELECT t.* FROM tracks t 
-        INNER JOIN playlist_track_cross_ref ref ON t.id = ref.trackId 
-        WHERE ref.playlistId = :playlistId
-    """)
-    fun getTracksForPlaylist(playlistId: Long): Flow<List<Track>>
-
-    // === History Queries ===
-    @Query("""
-        SELECT t.* FROM tracks t
-        INNER JOIN playback_history h ON t.id = h.trackId
-        ORDER BY h.playedAt DESC LIMIT 20
-    """)
-    fun getPlaybackHistory(): Flow<List<Track>>
-
+    // Playlist Tracks relation
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertHistory(history: PlaybackHistory)
+    suspend fun insertPlaylistTrack(playlistTrack: PlaylistTrack)
 
-    @Query("DELETE FROM playback_history")
-    suspend fun clearHistory()
+    @Query("DELETE FROM playlist_tracks WHERE playlistId = :playlistId AND trackId = :trackId")
+    suspend fun deletePlaylistTrack(playlistId: Long, trackId: Long)
+
+    @Query("DELETE FROM playlist_tracks WHERE playlistId = :playlistId")
+    suspend fun clearPlaylistTracks(playlistId: Long)
+
+    @Query("SELECT * FROM tracks WHERE id IN (SELECT trackId FROM playlist_tracks WHERE playlistId = :playlistId) ORDER BY dateAdded DESC")
+    fun getTracksForPlaylist(playlistId: Long): Flow<List<Track>>
 }

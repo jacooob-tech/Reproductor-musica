@@ -5,16 +5,7 @@ import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 
-@Database(
-    entities = [
-        Track::class,
-        Playlist::class,
-        PlaylistTrackCrossRef::class,
-        PlaybackHistory::class
-    ],
-    version = 2,
-    exportSchema = false
-)
+@Database(entities = [Track::class, Playlist::class, PlaylistTrack::class], version = 1, exportSchema = false)
 abstract class MusicDatabase : RoomDatabase() {
     abstract fun musicDao(): MusicDao
 
@@ -29,7 +20,7 @@ abstract class MusicDatabase : RoomDatabase() {
                     MusicDatabase::class.java,
                     "music_database"
                 )
-                .fallbackToDestructiveMigration()
+                .fallbackToDestructiveMigration() // Simple strategy for database resets
                 .build()
                 INSTANCE = instance
                 instance

@@ -1,91 +1,38 @@
 package com.example.network
 
 import android.util.Log
-import com.example.BuildConfig
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONObject
-import java.util.concurrent.TimeUnit
 
 object GeminiLyricsSearcher {
     private const val TAG = "GeminiLyricsSearcher"
-    
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .writeTimeout(30, TimeUnit.SECONDS)
-        .build()
 
-    suspend fun searchLyricsOnline(title: String, artist: String): String? = withContext(Dispatchers.IO) {
-        val apiKey = BuildConfig.GEMINI_API_KEY
-        if (apiKey.isBlank() || apiKey == "MY_GEMINI_API_KEY") {
-            Log.e(TAG, "Gemini API Key is blank or placeholder")
-            return@withContext null
+    suspend fun searchLyricsOnline(title: String, artist: String): String {
+        if (!GeminiApiClient.isApiKeyConfigured()) {
+            return "[Error: API Key no configurada]"
         }
 
-        val prompt = "Busca y devuelve la letra de la canción \"$title\" del artista \"$artist\" en español (o en su idioma original si no es español). " +
-                "Por favor, devuelve ÚNICAMENTE el texto plano de la letra, estructurada por estrofas. " +
-                "No incluyas ningún comentario adicional, explicaciones, intros de IA, ni saludos o formatos markdown como ```. " +
-                "Solo la letra limpia."
+        val prompt = "Busca la letra oficial de la canción '$title' del artista '$artist'. " +
+                "Por favor, devuelve ÚNICAMENTE la letra de la canción de manera limpia, sin comentarios, introducciones o anotaciones adicionales de ningún tipo. " +
+                "Si por alguna razón no encuentras la letra real, responde exactamente con '[Error: Letra no encontrada]'."
 
-        // Standard escaping of prompt to be inserted safely inside JSON
-        val escapedPrompt = prompt
-            .replace("\\", "\\\\")
-            .replace("\"", "\\\"")
-            .replace("\n", "\\n")
-            .replace("\r", "\\r")
-            .replace("\t", "\\t")
+        val systemInstruction = "Eres un asistente experto en música que devuelve letras de canciones de manera limpia, estructurada estrofa por estrofa, sin comentarios iniciales ni finales."
 
-        val jsonPayload = """
-            {
-              "contents": [
-                {
-                  "parts": [
-                    {
-                      "text": "$escapedPrompt"
-                    }
-                  ]
-                }
-              ]
-            }
-        """.trimIndent()
+        val request = GenerateContentRequest(
+            contents = listOf(Content(parts = listOf(Part(text = prompt)))),
+            systemInstruction = Content(parts = listOf(Part(text = systemInstruction))),
+            generationConfig = GenerationConfig(temperature = 0.2f)
+        )
 
-        val endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=$apiKey"
-        val mediaType = "application/json; charset=utf-8".toMediaType()
-        val requestBody = jsonPayload.toRequestBody(mediaType)
-
-        val request = Request.Builder()
-            .url(endpoint)
-            .post(requestBody)
-            .build()
-
-        try {
-            client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) {
-                    Log.e(TAG, "Request failed with code: ${response.code}")
-                    return@withContext null
-                }
-                val bodyString = response.body?.string() ?: return@withContext null
-                val jsonResponse = JSONObject(bodyString)
-                val candidates = jsonResponse.optJSONArray("candidates") ?: return@withContext null
-                val candidate = candidates.optJSONObject(0) ?: return@withContext null
-                val content = candidate.optJSONObject("content") ?: return@withContext null
-                val parts = content.optJSONArray("parts") ?: return@withContext null
-                val part = parts.optJSONObject(0) ?: return@withContext null
-                val text = part.optString("text")
-                if (text.isNotBlank()) {
-                    text.trim()
-                } else {
-                    null
-                }
+        return try {
+            val response = GeminiApiClient.service.generateContent(GeminiApiClient.getApiKey(), request)
+            val result = response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text?.trim()
+            if (result.isNullOrBlank() || result.contains("[Error: Letra no encontrada]")) {
+                "No se pudo encontrar la letra de esta canción de forma automática."
+            } else {
+                result
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error fetching lyrics from Gemini", e)
-            null
+            "Error al consultar la letra: ${e.localizedMessage}"
         }
     }
 }

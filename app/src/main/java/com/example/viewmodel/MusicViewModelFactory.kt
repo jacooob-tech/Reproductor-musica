@@ -14,6 +14,6 @@ class MusicViewModelFactory(
         if (modelClass.isAssignableFrom(MusicViewModel::class.java)) {
             return MusicViewModel(application, repository) as T
         }
-        throw IllegalArgumentException("Unknown ViewModel class: ${modelClass.name}")
+        throw IllegalArgumentException("Unknown ViewModel class")
     }
 }
