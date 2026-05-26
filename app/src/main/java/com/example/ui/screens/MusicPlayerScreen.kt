@@ -233,7 +233,7 @@ fun MusicPlayerApp(
                         progress = currentProgress,
                         waveAmplitudes = viewModel.audioWaveAmplitudes.collectAsStateWithLifecycle().value,
                         isShuffle = viewModel.isShuffle.collectAsStateWithLifecycle().value,
-                        isRepeat = viewModel.isRepeatTask.collectAsStateWithLifecycle().value,
+                        repeatMode = viewModel.repeatMode.collectAsStateWithLifecycle().value,
                         queue = viewModel.queue.collectAsStateWithLifecycle().value,
                         isSearchingLyrics = viewModel.isSearchingLyrics.collectAsStateWithLifecycle().value,
                         lyricsSearchError = viewModel.lyricsSearchError.collectAsStateWithLifecycle().value,
@@ -1362,7 +1362,7 @@ fun SettingsScreen(
                                     style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
                                 )
                                 Text(
-                                    text = "Escanea carpetas del almacenamiento en busca de archivos .mp3",
+                                    text = "Escanea carpetas del almacenamiento en busca de archivos .mp3, .m4a, y más",
                                     style = MaterialTheme.typography.bodySmall.copy(
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -1698,7 +1698,7 @@ fun ExpandedPlayerScreen(
     progress: Long,
     waveAmplitudes: List<Float>,
     isShuffle: Boolean,
-    isRepeat: Boolean,
+    repeatMode: Int,
     queue: List<Track>,
     isSearchingLyrics: Boolean,
     lyricsSearchError: String?,
@@ -1848,7 +1848,7 @@ fun ExpandedPlayerScreen(
                         progress = progress,
                         waveAmplitudes = waveAmplitudes,
                         isShuffle = isShuffle,
-                        isRepeat = isRepeat,
+                        repeatMode = repeatMode,
                         accentColor = accentColor,
                         connectedDeviceName = connectedDeviceName,
                         onPlayPauseToggle = onPlayPauseToggle,
@@ -1906,7 +1906,7 @@ fun PlayerControlsPage(
     progress: Long,
     waveAmplitudes: List<Float>,
     isShuffle: Boolean,
-    isRepeat: Boolean,
+    repeatMode: Int,
     accentColor: Color,
     connectedDeviceName: String = "Altavoz del Teléfono",
     onPlayPauseToggle: () -> Unit,
@@ -2231,10 +2231,17 @@ fun PlayerControlsPage(
                     onClick = onToggleRepeat,
                     modifier = Modifier.size(36.dp)
                 ) {
+                    val repeatIcon = if (repeatMode == 2) Icons.Filled.RepeatOne else Icons.Filled.Repeat
+                    val repeatTint = if (repeatMode > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                    val repeatDesc = when (repeatMode) {
+                        1 -> "Repetir lista completa"
+                        2 -> "Repetir pista actual"
+                        else -> "Sin repetición"
+                    }
                     Icon(
-                        imageVector = Icons.Filled.Repeat,
-                        contentDescription = "Bucle",
-                        tint = if (isRepeat) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        imageVector = repeatIcon,
+                        contentDescription = repeatDesc,
+                        tint = repeatTint,
                         modifier = Modifier.size(20.dp)
                     )
                 }

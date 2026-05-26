@@ -13,6 +13,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.isActive
 import kotlin.random.Random
 import android.content.Context
 import android.media.audiofx.Equalizer
@@ -306,8 +307,8 @@ class MusicViewModel(application: Application, private val repository: MusicRepo
     private val _isShuffle = MutableStateFlow(false)
     val isShuffle: StateFlow<Boolean> = _isShuffle.asStateFlow()
 
-    private val _isRepeatTask = MutableStateFlow(false) // false = repeat off, true = repeat current track
-    val isRepeatTask: StateFlow<Boolean> = _isRepeatTask.asStateFlow()
+    private val _repeatMode = MutableStateFlow(0) // 0 = no repeat, 1 = repeat queue, 2 = repeat track
+    val repeatMode: StateFlow<Int> = _repeatMode.asStateFlow()
 
     private val _audioWaveAmplitudes = MutableStateFlow(List(16) { 0.15f })
     val audioWaveAmplitudes: StateFlow<List<Float>> = _audioWaveAmplitudes.asStateFlow()
@@ -334,6 +335,10 @@ class MusicViewModel(application: Application, private val repository: MusicRepo
     private var playbackJob: Job? = null
     private var visualizerJob: Job? = null
     private var mediaPlayer: android.media.MediaPlayer? = null
+
+    // Procedural sound synthesizer for simulated tracks
+    private var synthJob: Job? = null
+    private var audioTrack: android.media.AudioTrack? = null
 
     fun getTrackFilePath(track: Track): String? {
         if (track.category != "Local") return null
@@ -380,6 +385,7 @@ class MusicViewModel(application: Application, private val repository: MusicRepo
         equalizer = null
 
         val path = getTrackFilePath(track)
+        var realFilePlayed = false
         if (path != null) {
             val file = java.io.File(path)
             if (file.exists()) {
@@ -398,21 +404,128 @@ class MusicViewModel(application: Application, private val repository: MusicRepo
 
                         setOnCompletionListener {
                             viewModelScope.launch {
-                                if (_isRepeatTask.value) {
-                                    seekTo(0L)
-                                    this@apply.start()
-                                } else {
-                                    nextTrack()
+                                when (_repeatMode.value) {
+                                    2 -> { // Repeat current track
+                                        seekTo(0L)
+                                        this@apply.start()
+                                    }
+                                    1 -> { // Repeat queue
+                                        nextTrack(isAutoCompleted = true)
+                                    }
+                                    0 -> { // No repeat
+                                        nextTrack(isAutoCompleted = true)
+                                    }
                                 }
                             }
                         }
                     }
                     mediaPlayer = mp
+                    realFilePlayed = true
                 } catch (e: Exception) {
                     android.util.Log.e("MusicViewModel", "Error initialising real MediaPlayer for path: $path", e)
                 }
             }
         }
+
+        if (!realFilePlayed) {
+            startProceduralSynthesizer()
+        } else {
+            stopProceduralSynthesizer()
+        }
+    }
+
+    private fun startProceduralSynthesizer() {
+        stopProceduralSynthesizer()
+        
+        val sampleRate = 22050
+        val bufferSize = 4096
+        
+        try {
+            val aa = android.media.AudioAttributes.Builder()
+                .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC)
+                .build()
+            val af = android.media.AudioFormat.Builder()
+                .setChannelMask(android.media.AudioFormat.CHANNEL_OUT_MONO)
+                .setEncoding(android.media.AudioFormat.ENCODING_PCM_16BIT)
+                .setSampleRate(sampleRate)
+                .build()
+            
+            val track = android.media.AudioTrack(
+                aa,
+                af,
+                bufferSize,
+                android.media.AudioTrack.MODE_STREAM,
+                android.media.AudioManager.AUDIO_SESSION_ID_GENERATE
+            )
+            audioTrack = track
+            track.play()
+        } catch (e: Exception) {
+            android.util.Log.e("MusicViewModel", "Error creating procedural AudioTrack", e)
+            return
+        }
+        
+        synthJob = viewModelScope.launch(kotlinx.coroutines.Dispatchers.Default) {
+            val trackState = _currentTrack.value ?: return@launch
+            val notes = when (trackState.category) {
+                "Synthwave" -> listOf(261.63f, 293.66f, 329.63f, 392.00f, 440.00f, 523.25f) // C4, D4, E4, G4, A4, C5
+                "Lofi" -> listOf(220.00f, 261.63f, 329.63f, 392.00f, 440.00f, 493.88f) // A3, C4, E4, G4, A4, B4
+                "Jazz" -> listOf(207.65f, 261.63f, 311.13f, 392.00f, 466.16f, 523.25f) // Ab3, C4, Eb4, G4, Bb4, C5
+                "Ambient" -> listOf(196.00f, 246.94f, 293.66f, 392.00f, 440.00f, 587.33f) // G3, B3, D4, G4, A4, D5
+                else -> listOf(261.63f, 329.63f, 392.00f, 523.25f, 659.25f) // C Major
+            }
+            
+            var sampleIndex = 0L
+            val shortBuffer = ShortArray(bufferSize)
+            val noteDurationSamples = (sampleRate * 0.7f).toInt()
+            var phase = 0.0
+            
+            while (isActive) {
+                val currentTrackProgress = _currentProgress.value
+                val maxDuration = _currentTrack.value?.durationMs ?: 0L
+                if (currentTrackProgress >= maxDuration) {
+                    break
+                }
+                
+                val noteSamplePos = (sampleIndex % (noteDurationSamples * notes.size)).toInt()
+                val activeNoteIndex = (noteSamplePos / noteDurationSamples) % notes.size
+                val freq = notes[activeNoteIndex]
+                val omega = 2.0 * Math.PI * freq / sampleRate
+                
+                for (i in 0 until bufferSize) {
+                    val decay = 1.0 - ((sampleIndex % noteDurationSamples).toDouble() / noteDurationSamples)
+                    val value = Math.sin(phase) * 0.45 + Math.sin(phase * 1.5) * 0.12 + Math.sin(phase * 2.0) * 0.08
+                    phase += omega
+                    if (phase > 2.0 * Math.PI) {
+                        phase -= 2.0 * Math.PI
+                    }
+                    
+                    val shortVal = (value * decay * 32767.0).toInt().coerceIn(-32768, 32767)
+                    shortBuffer[i] = shortVal.toShort()
+                    sampleIndex++
+                }
+                
+                try {
+                    audioTrack?.write(shortBuffer, 0, bufferSize)
+                } catch (e: Exception) {
+                    break
+                }
+            }
+        }
+    }
+
+    private fun stopProceduralSynthesizer() {
+        synthJob?.cancel()
+        synthJob = null
+        try {
+            audioTrack?.let {
+                if (it.playState == android.media.AudioTrack.PLAYSTATE_PLAYING) {
+                    it.stop()
+                }
+                it.release()
+            }
+        } catch (e: Exception) {}
+        audioTrack = null
     }
 
     // --- New Metadata and Device Ringtone management methods ---
@@ -439,6 +552,11 @@ class MusicViewModel(application: Application, private val repository: MusicRepo
         _aiRetrievalState.value = AiRetrievalState.Loading
         viewModelScope.launch {
             try {
+                val apiKey = com.example.BuildConfig.GEMINI_API_KEY
+                if (apiKey.isBlank() || apiKey == "MY_GEMINI_API_KEY") {
+                    _aiRetrievalState.value = AiRetrievalState.Error("La clave de Gemini no está configurada.\n\nPor favor, ve al panel 'Secrets' 🔑 (icono de llave en AI Studio), agrega la clave GEMINI_API_KEY con tu API Key y reinicia la app.")
+                    return@launch
+                }
                 val result = GeminiMusicAnalyzer.researchSongMetadata(title, artist)
                 if (result != null) {
                     _aiRetrievalState.value = AiRetrievalState.Success(result)
@@ -651,6 +769,8 @@ class MusicViewModel(application: Application, private val repository: MusicRepo
             val tracks = repository.allTracks.first()
             if (tracks.isNotEmpty()) {
                 _currentTrack.value = tracks.first()
+                _queue.value = tracks
+                _queueIndex.value = 0
             }
         }
     }
@@ -715,22 +835,59 @@ class MusicViewModel(application: Application, private val repository: MusicRepo
         }
     }
 
-    fun nextTrack() {
-        val q = _queue.value
+    fun nextTrack(isAutoCompleted: Boolean = false) {
+        var q = _queue.value
+        if (q.isEmpty()) {
+            val all = allTracks.value
+            if (all.isNotEmpty()) {
+                _queue.value = all
+                q = all
+                val currentIndex = all.indexOfFirst { it.id == _currentTrack.value?.id }
+                _queueIndex.value = if (currentIndex != -1) currentIndex else 0
+            } else {
+                return
+            }
+        }
         val index = _queueIndex.value
         if (q.isEmpty()) return
 
         val nextIndex = when {
             _isShuffle.value -> Random.nextInt(q.size)
             index < q.size - 1 -> index + 1
-            else -> 0 // Loop to first track
+            else -> {
+                if (isAutoCompleted) {
+                    if (_repeatMode.value == 1) {
+                        0 // Loop to first track in repeat all mode
+                    } else {
+                        // In repeat off mode, stop playback when reached the end
+                        _isPlaying.value = false
+                        _currentProgress.value = 0L
+                        stopSimulationJobs()
+                        return
+                    }
+                } else {
+                    // Manual click next wraps around
+                    0
+                }
+            }
         }
         _queueIndex.value = nextIndex
         playTrackNow(q[nextIndex], q)
     }
 
     fun previousTrack() {
-        val q = _queue.value
+        var q = _queue.value
+        if (q.isEmpty()) {
+            val all = allTracks.value
+            if (all.isNotEmpty()) {
+                _queue.value = all
+                q = all
+                val currentIndex = all.indexOfFirst { it.id == _currentTrack.value?.id }
+                _queueIndex.value = if (currentIndex != -1) currentIndex else 0
+            } else {
+                return
+            }
+        }
         val index = _queueIndex.value
         if (q.isEmpty()) return
 
@@ -761,7 +918,7 @@ class MusicViewModel(application: Application, private val repository: MusicRepo
     }
 
     fun toggleRepeat() {
-        _isRepeatTask.value = !_isRepeatTask.value
+        _repeatMode.value = (_repeatMode.value + 1) % 3
     }
 
     fun toggleFavorite(trackId: Long) {
@@ -807,6 +964,10 @@ class MusicViewModel(application: Application, private val repository: MusicRepo
     private fun restartSimulationJobs() {
         stopSimulationJobs()
 
+        if (mediaPlayer == null && _isPlaying.value) {
+            startProceduralSynthesizer()
+        }
+
         // 1. Progress updater
         playbackJob = viewModelScope.launch {
             while (true) {
@@ -824,10 +985,16 @@ class MusicViewModel(application: Application, private val repository: MusicRepo
                     } else {
                         val nextProgress = _currentProgress.value + 1000L
                         if (nextProgress >= curTrack.durationMs) {
-                            if (_isRepeatTask.value) {
-                                _currentProgress.value = 0L
-                            } else {
-                                nextTrack()
+                            when (_repeatMode.value) {
+                                2 -> { // Repeat current track
+                                    _currentProgress.value = 0L
+                                }
+                                1 -> { // Repeat queue
+                                    nextTrack(isAutoCompleted = true)
+                                }
+                                0 -> { // No repeat
+                                    nextTrack(isAutoCompleted = true)
+                                }
                             }
                         } else {
                             _currentProgress.value = nextProgress
@@ -865,11 +1032,13 @@ class MusicViewModel(application: Application, private val repository: MusicRepo
                 android.util.Log.e("MusicViewModel", "Error pausing MediaPlayer inside stopSimulationJobs", e)
             }
         }
+        stopProceduralSynthesizer()
     }
 
     override fun onCleared() {
         super.onCleared()
         stopSimulationJobs()
+        stopProceduralSynthesizer()
         mediaPlayer?.let {
             try {
                 if (it.isPlaying) {
@@ -906,6 +1075,11 @@ class MusicViewModel(application: Application, private val repository: MusicRepo
         _lyricsSearchError.value = null
         viewModelScope.launch {
             try {
+                val apiKey = com.example.BuildConfig.GEMINI_API_KEY
+                if (apiKey.isBlank() || apiKey == "MY_GEMINI_API_KEY") {
+                    _lyricsSearchError.value = "La clave de la API de Gemini (IA) no está configurada o es inválida.\n\nPor favor, ve al panel de 'Secrets' 🔑 (icono de la llave en el lateral izquierdo de Google AI Studio), agrega un secreto llamado GEMINI_API_KEY con tu API Key de Gemini, y reinicia la aplicación."
+                    return@launch
+                }
                 val lyrics = GeminiLyricsSearcher.searchLyricsOnline(title, artist)
                 if (lyrics != null) {
                     updateTrackLyrics(trackId, lyrics)
@@ -928,6 +1102,11 @@ class MusicViewModel(application: Application, private val repository: MusicRepo
         
         viewModelScope.launch {
             try {
+                val apiKey = com.example.BuildConfig.GEMINI_API_KEY
+                if (apiKey.isBlank() || apiKey == "MY_GEMINI_API_KEY") {
+                    _musicAnalysisError.value = "La clave de la API de Gemini (IA) no está configurada o es inválida.\n\nPor favor, ve al panel de 'Secrets' 🔑 (icono de la llave en el lateral izquierdo de Google AI Studio), agrega un secreto llamado GEMINI_API_KEY con tu API Key de Gemini, y reinicia la aplicación."
+                    return@launch
+                }
                 val analysis = GeminiMusicAnalyzer.analyzeSong(
                     trackId = track.id,
                     title = track.title,
